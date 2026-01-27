@@ -1,0 +1,9 @@
+[package]
+name = "MaRadioTropCool"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+adi = { git = "https://github.com/nothixy/libadi-rs.git" }
+libc = "0.2.180"
+num = "0.4.3"
