@@ -21,7 +21,7 @@ cargo +nightly build
 
 L'installation des dépendances se fera automatiquement lors de la compilation.
 
-Pour compiler l'exécutable dans le fichier `./target/debug/MaRadioTropCool`,
+Pour compiler l'exécutable dans le fichier `./target/debug/PlutoTUN`,
 ```sh
 cargo build
 ```
@@ -33,11 +33,11 @@ cargo run
 
 Enfin, l'interface réseau virtuelle TUN sur Linux demande des permissions. Deux possibilités s'offrent à vous : lancer le programme en tant que root
 ```sh
-sudo ./target/debug/MaRadioTropCool
+sudo ./target/debug/PlutoTUN
 ```
 ou bien ajouter la capability `CAP_NET_ADMIN` sur l'exécutable pour ne plus avoir à utiliser sudo par la suite
 ```sh
-sudo setcap CAP_NET_ADMIN=eip ./target/debug/MaRadioTropCool
+sudo setcap CAP_NET_ADMIN=eip ./target/debug/PlutoTUN
 ```
 
 Note : à la prochaine compilation avec `cargo build` ou `cargo run`, il faudra à nouveau lancer la commande setcap.
