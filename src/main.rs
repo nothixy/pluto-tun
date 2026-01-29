@@ -9,8 +9,6 @@ pub extern crate adi;
 use adi::traits::*;
 use num::complex::Complex32;
 
-use crate::symbol::symbol_to_qpsk;
-
 mod symbol;
 
 #[cfg_attr(target_os = "linux", path = "linux/tun.rs")]
@@ -20,12 +18,12 @@ mod tun;
 mod uid;
 
 static TX_HARDWARE_GAIN: f32 = -30.0;
-static RX_HARDWARE_GAIN: f32 = 50.0;
+static RX_HARDWARE_GAIN: f32 = 70.0;
 static CENTER_FREQUENCY: u64 = 2_400_000_000;
 static SAMPLE_RATE: u32 = 5_000_000;
-static NUM_SAMPS: usize = 600_000;
+static NUM_SAMPS: usize = 200_000;
 static OVERSAMPLING: usize = 25;
-static NOISE_FLOOR: i32 = 1500;
+static NOISE_FLOOR: f32 = 1000f32;
 static SAMPLING_MARGIN: usize = OVERSAMPLING / 5;
 static BYTES_PER_CONTROL: usize = 2;
 
@@ -44,7 +42,7 @@ fn function_tx() -> Result<(), ()>
         .set_tx_hardwaregain_chan0(TX_HARDWARE_GAIN)
         .map_err(|_| ())?;
 
-    let message = "Hello world lorem ipsum dolor si";
+    let message = "Hello world lorem ipsum dolor sit amet!!";
     loop {
         let size = (2 + 4 * BYTES_PER_CONTROL) * OVERSAMPLING * ((message.as_bytes().len() + BYTES_PER_CONTROL - 1) / BYTES_PER_CONTROL);
         let mut final_buffer = Vec::<Complex32>::with_capacity(size);
@@ -64,7 +62,7 @@ fn function_tx() -> Result<(), ()>
                 {
                     for _ in 0..OVERSAMPLING
                     {
-                        final_buffer.push(symbol_to_qpsk((c >> offset) & 0b11));
+                        final_buffer.push(symbol::symbol_to_qpsk((c >> offset) & 0b11));
                     }
                 }
             }
@@ -73,7 +71,7 @@ fn function_tx() -> Result<(), ()>
         {
             for _ in 0..OVERSAMPLING
             {
-                final_buffer.push(symbol_to_qpsk(0b00));
+                final_buffer.push(symbol::symbol_to_qpsk(0b00));
             }
         }
 
@@ -81,35 +79,115 @@ fn function_tx() -> Result<(), ()>
     }
 }
 
-// fn function_rx() -> Result<(), i32>
-// {
-//     println!("Starting function RX");
+fn function_rx() -> Result<(), i32>
+{
+    println!("Starting function RX");
 
-//     let mut pluto = adi::pluto::Pluto::new(Some("ip:192.168.2.1")).map_err(|_| 1)?;
+    let mut pluto = adi::pluto::Pluto::new(Some("ip:192.168.2.1")).map_err(|_| 1)?;
 
-//     pluto.set_gain_control_mode_chan0("manual").map_err(|_| 1)?;
-//     pluto.set_sample_rate(SAMPLE_RATE).map_err(|_| 1)?;
+    pluto.set_gain_control_mode_chan0("manual").map_err(|_| 1)?;
+    pluto.set_sample_rate(SAMPLE_RATE).map_err(|_| 1)?;
 
-//     pluto
-//         .set_rx_hardwaregain_chan0(RX_HARDWARE_GAIN)
-//         .map_err(|_| 1)?;
-//     pluto.set_rx_lo(CENTER_FREQUENCY).map_err(|_| 1)?;
-//     pluto.set_rx_rf_bandwidth(SAMPLE_RATE).map_err(|_| 1)?;
-//     pluto.set_rx_buffer_size(NUM_SAMPS);
+    pluto
+        .set_rx_hardwaregain_chan0(RX_HARDWARE_GAIN)
+        .map_err(|_| 1)?;
+    pluto.set_rx_lo(CENTER_FREQUENCY).map_err(|_| 1)?;
+    pluto.set_rx_rf_bandwidth(SAMPLE_RATE).map_err(|_| 1)?;
+    pluto.set_rx_buffer_size(NUM_SAMPS);
 
-//     let data = pluto.rx_complex().map_err(|_| 1)?;
-//     let useful = data[0]
-//         .iter()
-//         .map(|f| num::Complex::new(f.0 as f64, f.1 as f64))
-//         .collect::<Vec<symbol::PlutoComplex>>();
-//     let messages = symbol::decode_message(OVERSAMPLING, NOISE_FLOOR, SAMPLING_MARGIN, useful)
-//         .map_err(|_| 1)?;
-//     println!("Received messages = {:?}", messages);
+    let data = pluto.rx_complex().map_err(|_| 1)?;
+    let samples = &data[0];
 
-//     println!("Stopping function RX");
+    let mut i = 0;
+    while i < samples.len() && samples[i].norm() > NOISE_FLOOR
+    {
+        i += 1;
+    }
 
-//     Ok(())
-// }
+    while i < samples.len()
+    {
+        if samples[i].norm() > NOISE_FLOOR
+        {
+            let mut msg_bytes = vec![];
+            let mut estimated_angle_opt = None as Option<f32>;
+            while i < samples.len() && msg_bytes.len() < 20
+            {
+                let reference_points = &samples[(i + SAMPLING_MARGIN)..(i + OVERSAMPLING - SAMPLING_MARGIN)];
+                let mut reference = num::Complex::new(0.0, 0.0);
+                let angle;
+                for point in reference_points {
+                    reference += point;
+                }
+                reference /= reference_points.len() as f32;
+
+                i += OVERSAMPLING;
+                if let Some(estimated_angle) = estimated_angle_opt && symbol::closest_symb(reference * num::Complex::from_polar(1.0, -estimated_angle)) != symbol::closest_symb(num::Complex::new(0.0, 1.0))
+                {
+                    i += OVERSAMPLING;
+                    angle = estimated_angle;
+                }
+                else
+                {
+                    angle = (reference * num::Complex::new(0.0, 1.1).conj()).arg();
+
+                    let mut j = i - (OVERSAMPLING / 4);
+                    while j < i + (OVERSAMPLING / 4) && (samples[j] * num::Complex::from_polar(1.0, -angle)).arg() > 0.0 {
+                        j += 1;
+                    }
+                    let some_points = &samples[(j + SAMPLING_MARGIN)..(j + OVERSAMPLING - SAMPLING_MARGIN)];
+                    let mut some = num::Complex::new(0.0, 0.0);
+                    for point in some_points {
+                        some += point;
+                    }
+                    some /= some_points.len() as f32;
+                    if j < i + (OVERSAMPLING / 4) && symbol::closest_symb(some * num::Complex::from_polar(1.0, -angle)) == symbol::closest_symb(num::Complex::new(0.0, -1.0))
+                    {
+                        i = j + OVERSAMPLING;
+                    }
+                    else
+                    {
+                        i += OVERSAMPLING;
+                    }
+                }
+
+                estimated_angle_opt = Some(angle);
+
+                for _ in 0..BYTES_PER_CONTROL
+                {
+                    let mut byte = 0;
+                    for _ in 0..4
+                    {
+                        let data_points = &samples[(i + SAMPLING_MARGIN)..(i + OVERSAMPLING - SAMPLING_MARGIN)];
+
+                        let mut data = num::Complex::new(0.0, 0.0);
+                        for point in data_points {
+                            data += point;
+                        }
+                        data /= data_points.len() as f32;
+
+                        data *= num::Complex::from_polar(1.0, -angle);
+
+                        i += OVERSAMPLING;
+
+                        byte <<= 2;
+                        byte |= symbol::closest_symb(data);
+                    }
+                    msg_bytes.push(byte);
+                }
+
+                i += 1;
+            }
+
+            println!("{:?}", msg_bytes.iter().map(|f| *f as u8 as char).collect::<Vec<char>>());
+        }
+
+        i += 1;
+    }
+
+    println!("Stopping function RX");
+
+    Ok(())
+}
 
 fn main() -> Result<(), i32> {
     // let mut pluto = adi::pluto::Pluto::new(Some("ip:192.168.3.1")).map_err(|_| 1)?;
@@ -176,6 +254,18 @@ fn main() -> Result<(), i32> {
     //     }
     // }
 
-    function_tx().map_err(|_| 1)?;
+    let args = std::env::args().collect::<Vec<String>>();
+    if args.len() != 2 {
+        eprintln!("Usage: rx tx");
+        return Err(1);
+    }
+    match &args[1] {
+        f if f == "tx" => function_tx().map_err(|_| 1)?,
+        f if f == "rx" => function_rx().map_err(|_| 1)?,
+        _ => {
+            eprintln!("Error");
+            return Err(1);
+        }
+    };
     Ok(())
 }
