@@ -18,15 +18,15 @@ pub fn symb_sample(oversampling: i32, symb: PlutoComplex) -> Vec<PlutoComplex> {
     ones_vec
 }
 
-pub fn closest_symb(qpsk: PlutoComplex) -> usize {
+pub fn closest_symb(qpsk: PlutoComplex) -> u8 {
     let qpsk_norm = qpsk / qpsk.norm();
-    let mut index = 0;
+    let mut index = 0u8;
     let mut min_diff = (qpsk_norm - QPSK_TABLE[0]).norm();
     for (i, item) in QPSK_TABLE.iter().enumerate().skip(1) {
         let diff = (qpsk_norm - item).norm();
         if diff < min_diff {
             min_diff = diff;
-            index = i;
+            index = i as u8;
         }
     }
     index
