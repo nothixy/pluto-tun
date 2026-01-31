@@ -21,14 +21,14 @@ mod tun;
 
 mod uid;
 
-static TX_HARDWARE_GAIN: f32 = -50.0;
-static RX_HARDWARE_GAIN: f32 = 60.0;
+static TX_HARDWARE_GAIN: f32 = -60.0;
+static RX_HARDWARE_GAIN: f32 = 70.0;
 static CENTER_FREQUENCY_CLIENT: u64 = 2_400_000_000;
 static CENTER_FREQUENCY_SERVER: u64 = 2_483_500_000;
-static SAMPLE_RATE: u32 = 5_000_000;
-static NUM_SAMPS: usize = 1_000_000;
+static SAMPLE_RATE: u32 = 1_000_000;
+static NUM_SAMPS: usize = 2_000_000;
 static OVERSAMPLING: usize = 25;
-static NOISE_FLOOR: f32 = 1300f32;
+static NOISE_FLOOR: f32 = 1000f32;
 static SAMPLING_MARGIN: usize = OVERSAMPLING / 5;
 static BYTES_PER_CONTROL: usize = 2;
 
@@ -90,7 +90,7 @@ fn function_rx(fd: i32, pluto: &std::sync::Arc<std::sync::Mutex<adi::pluto::Plut
             {
                 let mut msg_bytes = vec![];
                 let mut estimated_angle_opt = None as Option<f32>;
-                while i < samples.len() && msg_bytes.len() < 20
+                while i < samples.len() && msg_bytes.len() < 10
                 {
                     let max_point = std::cmp::min(i + OVERSAMPLING - SAMPLING_MARGIN, samples.len());
                     let min_point = std::cmp::min(i + SAMPLING_MARGIN, samples.len());
@@ -168,9 +168,15 @@ fn function_rx(fd: i32, pluto: &std::sync::Arc<std::sync::Mutex<adi::pluto::Plut
                     i += 1;
                 }
 
-                println!("{:02x?}", msg_bytes.iter().map(|f| *f as u8).collect::<Vec<u8>>());
+                println!("{:02x?}", msg_bytes.iter().map(|f| *f as u8 as char).collect::<Vec<char>>());
 
-                if msg_bytes.len() < 20 {
+                if msg_bytes.len() < 10 {
+                    continue;
+                }
+
+                let checksum_correct = msg_bytes.iter().fold(0, |acc, e| acc ^ e);
+                if checksum_correct != 7 {
+                    println!("Refused because of checksum : {:02x?}", msg_bytes);
                     continue;
                 }
 
@@ -183,12 +189,6 @@ fn function_rx(fd: i32, pluto: &std::sync::Arc<std::sync::Mutex<adi::pluto::Plut
                     previous_packet = -1;
                     buffer = vec![];
                     println!("Refused because of packet index : {:02x?}", msg_bytes);
-                    continue;
-                }
-
-                let checksum_correct = msg_bytes.iter().fold(0, |acc, e| acc ^ e);
-                if checksum_correct != 0 {
-                    println!("Refused because of checksum : {:02x?}", msg_bytes);
                     continue;
                 }
 
@@ -235,35 +235,35 @@ fn tun_read_and_send(fd: i32, pluto: &std::sync::Arc<std::sync::Mutex<adi::pluto
         let packet_length = first_packet.len() as u16;
         let packet_length_bytes: [u8; 2] = packet_length.to_be_bytes();
         let mut first_header = vec![0u8, 0u8, packet_length_bytes[0], packet_length_bytes[1]];
-        let mut buf = first_packet.drain(16..).collect::<Vec<u8>>();
+        let mut buf = first_packet.drain(6..).collect::<Vec<u8>>();
         first_header.append(&mut first_packet);
         let sum = first_header.iter().fold(0, |acc, e| acc ^ e);
-        first_header[0] = sum;
+        first_header[0] = sum ^ 7;
         // SEND THE PACKET HERE
-        for _ in 0..4 {
+        for _ in 0..2 {
             function_tx(&first_header, &pluto);
         }
         // println!("Bytes {:?}", first_header);
         let mut iterator = buf.iter();
         for i in 1..
         {
-            let mut bytes = iterator.clone().take(18).map(|f| *f).collect::<Vec<u8>>();
+            let mut bytes = iterator.clone().take(8).map(|f| *f).collect::<Vec<u8>>();
             if bytes.len() == 0 {
                 break;
             }
             let mut header = vec![0u8, i];
             header.append(&mut bytes);
-            while header.len() != 20 {
+            while header.len() != 10 {
                 header.push(0);
             }
             let sum = header.iter().fold(0, |acc, e| acc ^ e);
-            header[0] = sum;
+            header[0] = sum ^ 7;
             // SEND THE PACKET HERE
-            for _ in 0..4 {
+            for _ in 0..2 {
                 function_tx(&header, &pluto);
             }
             // println!("Bytes {:?}", header);
-            let res = iterator.advance_by(18);
+            let res = iterator.advance_by(8);
             if res.is_err() {
                 break;
             }
@@ -335,7 +335,6 @@ fn main() -> Result<(), i32> {
         tun_read_and_send(fd, &pluto_mutex_clone)
     });
 
-    std::thread::sleep(std::time::Duration::new(1, 0));
     tun_recv_and_wrte(fd, &pluto_mutex).map_err(|_| 1)?;
 
     thread_status.join().map_err(|_| 1)?;
