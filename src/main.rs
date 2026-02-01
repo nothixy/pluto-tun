@@ -1,17 +1,12 @@
-#![feature(ascii_char)]
-#![feature(int_from_ascii)]
 #![feature(ip_as_octets)]
 #![feature(addr_parse_ascii)]
 #![feature(iter_advance_by)]
+#![feature(never_type)]
 
 pub extern crate adi;
 
-use std::os::fd;
-
 use adi::traits::*;
 use num::complex::Complex32;
-
-use crate::tun::read_from_tun;
 
 mod symbol;
 
@@ -31,13 +26,36 @@ static OVERSAMPLING: usize = 25;
 static NOISE_FLOOR: f32 = 1000f32;
 static SAMPLING_MARGIN: usize = OVERSAMPLING / 5;
 static BYTES_PER_CONTROL: usize = 2;
+static FRAME_SPLIT_LENGTH: usize = 10;
+static FRAME_TRANSMIT_REPEAT_COUNT: usize = 2;
 
+/// Sends the bytes passed as an argument to the pluto device passed as argument
+/// 
+/// # Errors
+/// This function may fail if the pluto tx function fails
+/// 
+/// # Panics
+/// This function may panic if the mutex holding the pluto device was poisoned
+/// 
+/// # Examples
+/// ```
+/// let pluto = Arc::new(Mutex::new(Pluto::new(Some("ip:192.168.2.1".to_owned()))).unwrap();
+/// let message = vec![1, 2, 3, 4];
+/// let res = function_tx(&message, &pluto);
+/// if res.is_err() {
+///     // Handle error
+/// }
+/// ```
 fn function_tx(message: &Vec<u8>, pluto: &std::sync::Arc<std::sync::Mutex<adi::pluto::Pluto>>) -> Result<(), ()>
 {
+    // Compute size of TX buffer and allocate it once
     let size = (2 + 4 * BYTES_PER_CONTROL) * OVERSAMPLING * ((message.len() + BYTES_PER_CONTROL - 1) / BYTES_PER_CONTROL);
     let mut final_buffer = Vec::<Complex32>::with_capacity(size);
+
+    // Populate buffer
     for i in (0..message.len()).step_by(BYTES_PER_CONTROL)
     {
+        // Indicate beginning of transmission
         for _ in 0..OVERSAMPLING
         {
             final_buffer.push(Complex32::new(0.0, 1.0));
@@ -46,6 +64,8 @@ fn function_tx(message: &Vec<u8>, pluto: &std::sync::Arc<std::sync::Mutex<adi::p
         {
             final_buffer.push(Complex32::new(0.0, -1.0));
         }
+
+        // Encode message bytes
         for &c in &message[i..std::cmp::min(i+BYTES_PER_CONTROL, message.len())]
         {
             for offset in [6, 4, 2, 0]
@@ -57,6 +77,8 @@ fn function_tx(message: &Vec<u8>, pluto: &std::sync::Arc<std::sync::Mutex<adi::p
             }
         }
     }
+
+    // Final 0 bytes to indicate the end
     for _ in 0..(message.len() % BYTES_PER_CONTROL)
     {
         for _ in 0..OVERSAMPLING
@@ -65,19 +87,39 @@ fn function_tx(message: &Vec<u8>, pluto: &std::sync::Arc<std::sync::Mutex<adi::p
         }
     }
 
+    // Send data to the pluto device
     pluto.lock().unwrap().tx(Some(vec![final_buffer]))?;
     Ok(())
 }
 
-fn function_rx(fd: i32, pluto: &std::sync::Arc<std::sync::Mutex<adi::pluto::Pluto>>) -> Result<(), ()>
+/// Receives bytes from the pluto device and sends them to the tun device
+/// 
+/// # Errors
+/// This function may fail if the pluto device's rx_complex function fails
+/// 
+/// # Panics
+/// This function may panic if the mutex holding the pluto device was poisoned
+/// 
+/// # Examples
+/// ```
+/// let pluto = Arc::new(Mutex::new(Pluto::new(Some("ip:192.168.2.1".to_owned()))).unwrap();
+/// let tun_device = TunDevice::new("tun0".to_owned()).unwrap();
+/// let res = function_rx(&tun_device, &pluto);
+/// if res.is_err() {
+///     // Handle error
+/// }
+/// ```
+fn function_rx(tun_device: &tun::TunDevice, pluto: &std::sync::Arc<std::sync::Mutex<adi::pluto::Pluto>>) -> Result<!, ()>
 {
     let mut buffer = vec![];
     let mut previous_packet = -1;
     let mut buffer_supposed_length = 0;
     loop {
+        // Get data from the pluto device
         let data = pluto.lock().unwrap().rx_complex().map_err(|_| ())?;
         let samples = &data[0];
 
+        // If we are in the middle of a transmission, wait for the end
         let mut i = 0;
         while i < samples.len() && samples[i].norm() > NOISE_FLOOR
         {
@@ -86,15 +128,17 @@ fn function_rx(fd: i32, pluto: &std::sync::Arc<std::sync::Mutex<adi::pluto::Plut
 
         while i < samples.len()
         {
+            // Check for bytes above the noise floor, this is the beginning of a new message
             if samples[i].norm() > NOISE_FLOOR
             {
                 let mut msg_bytes = vec![];
                 let mut estimated_angle_opt = None as Option<f32>;
-                while i < samples.len() && msg_bytes.len() < 10
+                while i < samples.len() && msg_bytes.len() < FRAME_SPLIT_LENGTH
                 {
                     let max_point = std::cmp::min(i + OVERSAMPLING - SAMPLING_MARGIN, samples.len());
                     let min_point = std::cmp::min(i + SAMPLING_MARGIN, samples.len());
 
+                    // Get the mean signal, it will allow to compute the phase shift
                     let reference_points = &samples[min_point..max_point];
                     let mut reference = num::Complex::new(0.0, 0.0);
                     let angle;
@@ -106,13 +150,16 @@ fn function_rx(fd: i32, pluto: &std::sync::Arc<std::sync::Mutex<adi::pluto::Plut
                     i += OVERSAMPLING;
                     if let Some(estimated_angle) = estimated_angle_opt && symbol::closest_symb(reference * num::Complex::from_polar(1.0, -estimated_angle)) != symbol::closest_symb(num::Complex::new(0.0, 1.0))
                     {
+                        // Phase shifted too much, don't trust this reference
                         i += OVERSAMPLING;
                         angle = estimated_angle;
                     }
                     else
                     {
+                        // Compute the phase correction needed
                         angle = (reference * num::Complex::new(0.0, 1.1).conj()).arg();
 
+                        // Synchronize by finding the switch between 1j to -1j
                         let mut j = i - (OVERSAMPLING / 4);
                         while j < samples.len() && j < i + (OVERSAMPLING / 4) && (samples[j] * num::Complex::from_polar(1.0, -angle)).arg() > 0.0 {
                             j += 1;
@@ -129,10 +176,12 @@ fn function_rx(fd: i32, pluto: &std::sync::Arc<std::sync::Mutex<adi::pluto::Plut
                         some /= some_points.len() as f32;
                         if j < i + (OVERSAMPLING / 4) && symbol::closest_symb(some * num::Complex::from_polar(1.0, -angle)) == symbol::closest_symb(num::Complex::new(0.0, -1.0))
                         {
+                            // Time synchronization is good
                             i = j + OVERSAMPLING;
                         }
                         else
                         {
+                            // Time synchronization is bad, use last computed value
                             i += OVERSAMPLING;
                         }
                     }
@@ -147,8 +196,8 @@ fn function_rx(fd: i32, pluto: &std::sync::Arc<std::sync::Mutex<adi::pluto::Plut
                             let max_point = std::cmp::min(i + OVERSAMPLING - SAMPLING_MARGIN, samples.len());
                             let min_point = std::cmp::min(i + SAMPLING_MARGIN, samples.len());
 
+                            // Get real data, correct it
                             let data_points = &samples[min_point..max_point];
-
                             let mut data = num::Complex::new(0.0, 0.0);
                             for point in data_points {
                                 data += point;
@@ -170,16 +219,19 @@ fn function_rx(fd: i32, pluto: &std::sync::Arc<std::sync::Mutex<adi::pluto::Plut
 
                 println!("{:02x?}", msg_bytes.iter().map(|f| *f as u8 as char).collect::<Vec<char>>());
 
-                if msg_bytes.len() < 10 {
+                // Check if the received frame is long enough
+                if msg_bytes.len() < FRAME_SPLIT_LENGTH {
                     continue;
                 }
 
+                // Verify the checksum
                 let checksum_correct = msg_bytes.iter().fold(0, |acc, e| acc ^ e);
                 if checksum_correct != 7 {
                     println!("Refused because of checksum : {:02x?}", msg_bytes);
                     continue;
                 }
 
+                // Check for packets in order
                 if msg_bytes[1] as i16 == previous_packet {
                     println!("Ignored because of packet index : {:02x?}", msg_bytes);
                     continue;
@@ -192,6 +244,7 @@ fn function_rx(fd: i32, pluto: &std::sync::Arc<std::sync::Mutex<adi::pluto::Plut
                     continue;
                 }
 
+                // Check frame type (1 or N)
                 if msg_bytes[1] == 0
                 {
                     buffer.append(&mut msg_bytes[4..].to_vec());
@@ -204,11 +257,10 @@ fn function_rx(fd: i32, pluto: &std::sync::Arc<std::sync::Mutex<adi::pluto::Plut
 
                 previous_packet = msg_bytes[1] as i16;
 
-                println!("Expected {}, got {}", buffer_supposed_length, buffer.len());
-
+                // Frame fully reconstructed
                 if buffer.len() >= buffer_supposed_length as usize {
                     println!("GOT IT");
-                    tun::write_to_tun(fd, &buffer[..buffer_supposed_length as usize].to_vec());
+                    tun_device.write_to_tun(&buffer[..buffer_supposed_length as usize].to_vec());
                 }
 
             }
@@ -218,52 +270,104 @@ fn function_rx(fd: i32, pluto: &std::sync::Arc<std::sync::Mutex<adi::pluto::Plut
     }
 }
 
-fn tun_recv_and_wrte(fd: i32, pluto: &std::sync::Arc<std::sync::Mutex<adi::pluto::Pluto>>) -> Result<(), ()>
+/// Proxy function for function_rx
+/// Sends the bytes passed as an argument to the pluto device passed as argument
+/// 
+/// # Errors
+/// This function may fail if the pluto tx function fails
+/// 
+/// # Panics
+/// This function may panic if the mutex holding the pluto device was poisoned
+/// 
+/// # Examples
+/// ```
+/// let pluto = Arc::new(Mutex::new(Pluto::new(Some("ip:192.168.2.1".to_owned()))).unwrap();
+/// let tun_device = TunDevice::new("tun0".to_owned()).unwrap();
+/// let res = tun_recv_and_wrte(&tun_device, &pluto);
+/// if res.is_err() {
+///     // Handle error
+/// }
+/// ```
+fn tun_recv_and_wrte(tun_device: &tun::TunDevice, pluto: &std::sync::Arc<std::sync::Mutex<adi::pluto::Pluto>>) -> Result<!, ()>
 {
-    function_rx(fd, pluto)
+    function_rx(tun_device, pluto)
 }
 
-fn tun_read_and_send(fd: i32, pluto: &std::sync::Arc<std::sync::Mutex<adi::pluto::Pluto>>) -> Result<(), ()>
+/// Reads bytes from the TUN device, encodes them, and sends them via function_tx
+/// 
+/// # Errors
+/// This function may fail if function_tx fails
+/// 
+/// # Panics
+/// This function may panic if the mutex holding the pluto device was poisoned
+/// 
+/// # Examples
+/// ```
+/// let pluto = Arc::new(Mutex::new(Pluto::new(Some("ip:192.168.2.1".to_owned()))).unwrap();
+/// let tun_device = TunDevice::new("tun0".to_owned()).unwrap();
+/// let res = tun_read_and_send(&tun_device, &pluto);
+/// if res.is_err() {
+///     // Handle error
+/// }
+/// ```
+fn tun_read_and_send(tun_device: &tun::TunDevice, pluto: &std::sync::Arc<std::sync::Mutex<adi::pluto::Pluto>>) -> Result<!, ()>
 {
     println!("Starting function TX");
 
     loop {
-        let mut first_packet = tun::read_from_tun(fd);
-
-        println!("Got new packet of length = {}", first_packet.len());
-
+        // Get bytes to send and length
+        let mut first_packet = tun_device.read_from_tun();
         let packet_length = first_packet.len() as u16;
+
+        // Frame 1
         let packet_length_bytes: [u8; 2] = packet_length.to_be_bytes();
+
+        // Create initial header
         let mut first_header = vec![0u8, 0u8, packet_length_bytes[0], packet_length_bytes[1]];
-        let mut buf = first_packet.drain(6..).collect::<Vec<u8>>();
+        let buf = first_packet.drain((FRAME_SPLIT_LENGTH - first_header.len())..).collect::<Vec<u8>>();
+
+        // Append payload
         first_header.append(&mut first_packet);
+
+        // Compute checksum
         let sum = first_header.iter().fold(0, |acc, e| acc ^ e);
         first_header[0] = sum ^ 7;
-        // SEND THE PACKET HERE
-        for _ in 0..2 {
-            function_tx(&first_header, &pluto);
+
+        // Transmit twice
+        for _ in 0..FRAME_TRANSMIT_REPEAT_COUNT {
+            function_tx(&first_header, &pluto)?;
         }
-        // println!("Bytes {:?}", first_header);
+
+        // Frame N
         let mut iterator = buf.iter();
         for i in 1..
         {
-            let mut bytes = iterator.clone().take(8).map(|f| *f).collect::<Vec<u8>>();
+            // Create header
+            let mut header = vec![0u8, i];
+
+            // Take following bytes
+            let mut bytes = iterator.clone().take(FRAME_SPLIT_LENGTH - header.len()).map(|f| *f).collect::<Vec<u8>>();
             if bytes.len() == 0 {
                 break;
             }
-            let mut header = vec![0u8, i];
+
+            // Append payload and padding bytes
             header.append(&mut bytes);
-            while header.len() != 10 {
+            while header.len() != FRAME_SPLIT_LENGTH {
                 header.push(0);
             }
+
+            // Compute checksum
             let sum = header.iter().fold(0, |acc, e| acc ^ e);
             header[0] = sum ^ 7;
-            // SEND THE PACKET HERE
-            for _ in 0..2 {
-                function_tx(&header, &pluto);
+
+            // Transmit twice
+            for _ in 0..FRAME_TRANSMIT_REPEAT_COUNT {
+                function_tx(&header, &pluto)?;
             }
-            // println!("Bytes {:?}", header);
-            let res = iterator.advance_by(8);
+
+            // Move iterator forward
+            let res = iterator.advance_by(FRAME_SPLIT_LENGTH - header.len());
             if res.is_err() {
                 break;
             }
@@ -272,16 +376,17 @@ fn tun_read_and_send(fd: i32, pluto: &std::sync::Arc<std::sync::Mutex<adi::pluto
 }
 
 fn main() -> Result<(), i32> {
-    // TUN
+    // Check permission to interact with TUN
     if uid::geteuid() != 0
     {
         eprintln!("Error, you must be root");
         return Err(1);
     }
 
+    // Use command-line arguments
     let args = std::env::args().collect::<Vec<String>>();
     if args.len() != 2 {
-        eprintln!("Usage: rx tx");
+        eprintln!("Usage: {} <server|client>", args[0]);
         return Err(1);
     }
     let (id, other_id, freq_snd, freq_rcv) = match &args[1] {
@@ -293,6 +398,7 @@ fn main() -> Result<(), i32> {
         }
     };
 
+    // Configure TUN device with IP address, peer address and netmask
     let ip_address_str = format!("10.0.0.{}", id);
     let peer_ip_address_str = format!("10.0.0.{}", other_id);
 
@@ -302,11 +408,12 @@ fn main() -> Result<(), i32> {
 
     let pluto_ip_address_string = format!("ip:192.168.{}.1", id);
 
-    let tun_device = format!("tun{}", id);
+    let tun_device_name = format!("tun{}", id);
     
-    let fd = tun::tun_alloc(tun_device.as_str()).map_err(|_| 1)?;
-    tun::set_ip(tun_device.as_str(), std::net::Ipv4Addr::parse_ascii(ip_address).unwrap(), std::net::Ipv4Addr::parse_ascii(peer_ip_address).unwrap(), std::net::Ipv4Addr::parse_ascii(netmask).unwrap()).map_err(|_| 1)?;
+    let tun_device = tun::TunDevice::new(tun_device_name).map_err(|_| 1)?;
+    tun_device.set_ip(std::net::Ipv4Addr::parse_ascii(ip_address).unwrap(), std::net::Ipv4Addr::parse_ascii(peer_ip_address).unwrap(), std::net::Ipv4Addr::parse_ascii(netmask).unwrap()).map_err(|_| 1)?;
 
+    // Connect to Pluto device and set parameters
     let mut pluto = adi::pluto::Pluto::new(Some(pluto_ip_address_string)).map_err(|_| 1)?;
 
     // TX + RX
@@ -331,26 +438,29 @@ fn main() -> Result<(), i32> {
     let pluto_mutex = std::sync::Arc::new(std::sync::Mutex::new(pluto));
     let pluto_mutex_clone = std::sync::Arc::clone(&pluto_mutex);
 
-    let thread_status = std::thread::spawn(move || {
-        tun_read_and_send(fd, &pluto_mutex_clone)
+    // Run TX and RX threasds
+    let mut error_status = 0;
+    std::thread::scope(|s| {
+        let thread_send_status = s.spawn(|| {
+            tun_read_and_send(&tun_device, &pluto_mutex_clone)
+        });
+
+        let thread_recv_status = s.spawn(|| {
+            tun_recv_and_wrte(&tun_device, &pluto_mutex)
+        });
+
+        if thread_send_status.join().is_err() {
+            error_status = 1;
+        }
+
+        if thread_recv_status.join().is_err() {
+            error_status = 1;
+        }
     });
 
-    tun_recv_and_wrte(fd, &pluto_mutex).map_err(|_| 1)?;
+    if error_status != 0 {
+        return Err(error_status);
+    }
 
-    thread_status.join().map_err(|_| 1)?;
-
-    // let pluto_mutex = std::sync::Arc::new(std::sync::Mutex::new(pluto));
-
-    // BIDIRECTIONAL
-    // let stop_mutex = std::sync::Arc::new(std::sync::Mutex::new(false));
-    // let stop_mutex_clone = std::sync::Arc::clone(&stop_mutex);
-
-    // let thread_status = std::thread::spawn(|| {
-    //     function_tx(stop_mutex_clone)
-    // });
-    // std::thread::sleep(std::time::Duration::new(1, 0));
-    // function_rx()?;
-    // *(stop_mutex.lock().unwrap()) = true;
-    // thread_status.join().map_err(|_| 1)?
     Ok(())
 }

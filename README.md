@@ -35,9 +35,3 @@ Enfin, l'interface réseau virtuelle TUN sur Linux demande des permissions. Deux
 ```sh
 sudo ./target/debug/PlutoTUN
 ```
-ou bien ajouter la capability `CAP_NET_ADMIN` sur l'exécutable pour ne plus avoir à utiliser sudo par la suite
-```sh
-sudo setcap CAP_NET_ADMIN=eip ./target/debug/PlutoTUN
-```
-
-Note : à la prochaine compilation avec `cargo build` ou `cargo run`, il faudra à nouveau lancer la commande setcap.

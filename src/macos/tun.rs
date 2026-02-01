@@ -12,6 +12,3 @@ pub fn read_from_tun(fd: i32)
 {
     todo!()
 }
-
-unsafe extern "C" {
-}
