@@ -36,12 +36,14 @@ cargo run
 
 Enfin, l'interface réseau virtuelle TUN sur Linux demande des permissions. Il faut donc lancer le programme en tant que root.
 
-Pour lancer le premier pair :
+Pour lancer le premier pair (dont la Pluto doit avoir l'IP 192.168.2.1) :
 ```sh
 sudo ./target/debug/PlutoTUN server
 ```
 
-Et pour lancer le second :
+Et pour lancer le second (dont la Pluto doit avoir l'IP 192.168.3.1) :
 ```sh
 sudo ./target/debug/PlutoTUN client
 ```
+
+Le 1er hôte aura une interface tun2 avec l'IP 10.0.0.2 et le 2nd aura une interface tun3 avec l'IP 10.0.0.3.
