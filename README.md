@@ -32,7 +32,7 @@ Pour compiler l'exécutable au même endroit et le lancer par la suite,
 cargo run
 ```
 
-Enfin, l'interface réseau virtuelle TUN sur Linux demande des permissions. Deux possibilités s'offrent à vous : lancer le programme en tant que root
+Enfin, l'interface réseau virtuelle TUN sur Linux demande des permissions. Il faut donc lancer le programme en tant que root.
 ```sh
-sudo ./target/debug/PlutoTUN
+sudo ./target/debug/PlutoTUN <client|server>
 ```
