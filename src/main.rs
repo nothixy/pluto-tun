@@ -16,7 +16,7 @@ mod tun;
 
 mod uid;
 
-static TX_HARDWARE_GAIN: f32 = -60.0;
+static TX_HARDWARE_GAIN: f32 = -65.0;
 static RX_HARDWARE_GAIN: f32 = 70.0;
 static CENTER_FREQUENCY_CLIENT: u64 = 2_400_000_000;
 static CENTER_FREQUENCY_SERVER: u64 = 2_483_500_000;
@@ -25,8 +25,8 @@ static NUM_SAMPS: usize = 2_000_000;
 static OVERSAMPLING: usize = 25;
 static NOISE_FLOOR: f32 = 1000f32;
 static SAMPLING_MARGIN: usize = OVERSAMPLING / 5;
-static BYTES_PER_CONTROL: usize = 2;
-static FRAME_SPLIT_LENGTH: usize = 10;
+static BYTES_PER_CONTROL: usize = 3;
+static FRAME_SPLIT_LENGTH: usize = 12;
 static FRAME_TRANSMIT_REPEAT_COUNT: usize = 2;
 
 /// Sends the bytes passed as an argument to the pluto device passed as argument
@@ -314,10 +314,24 @@ fn tun_read_and_send(tun_device: &tun::TunDevice, pluto: &std::sync::Arc<std::sy
 {
     println!("Starting function TX");
 
+    // let mut packet = vec![0u8, 0, 0, 5, 'H' as u8, 'E' as u8, 'L' as u8, 'L' as u8, 'O' as u8, 0, 0, 0];
+    // let sum = packet.iter().fold(0, |acc, e| acc ^ e);
+    // packet[0] = sum ^ 7;
+    // loop {
+    //     function_tx(&packet, pluto);
+    // }
+    // return Err(());
+
     loop {
         // Get bytes to send and length
         let mut first_packet = tun_device.read_from_tun();
         let packet_length = first_packet.len() as u16;
+
+        println!("Packet length = {}", packet_length);
+
+        if packet_length > tun::TUN_MTU as u16 {
+            continue;
+        }
 
         // Frame 1
         let packet_length_bytes: [u8; 2] = packet_length.to_be_bytes();
@@ -339,14 +353,14 @@ fn tun_read_and_send(tun_device: &tun::TunDevice, pluto: &std::sync::Arc<std::sy
         }
 
         // Frame N
-        let mut iterator = buf.iter();
+        let mut slice = buf.as_slice();
         for i in 1..
         {
             // Create header
             let mut header = vec![0u8, i];
 
             // Take following bytes
-            let mut bytes = iterator.clone().take(FRAME_SPLIT_LENGTH - header.len()).map(|f| *f).collect::<Vec<u8>>();
+            let mut bytes = slice.iter().take(FRAME_SPLIT_LENGTH - header.len()).map(|f| *f).collect::<Vec<u8>>();
             if bytes.len() == 0 {
                 break;
             }
@@ -367,10 +381,10 @@ fn tun_read_and_send(tun_device: &tun::TunDevice, pluto: &std::sync::Arc<std::sy
             }
 
             // Move iterator forward
-            let res = iterator.advance_by(FRAME_SPLIT_LENGTH - header.len());
-            if res.is_err() {
+            if FRAME_SPLIT_LENGTH - 2 > slice.len() {
                 break;
             }
+            slice = &slice[FRAME_SPLIT_LENGTH - 2..];
         }
     }
 }

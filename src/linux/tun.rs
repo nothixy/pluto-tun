@@ -1,4 +1,4 @@
-static TUN_MTU: usize = 1500;
+pub static TUN_MTU: usize = 1500;
 
 pub struct TunDevice {
     fd: i32,
