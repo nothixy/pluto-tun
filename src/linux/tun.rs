@@ -70,7 +70,7 @@ impl TunDevice {
 
         // Set IP address
         ifreq.ifr_ifru.ifru_addr.sa_family = libc::AF_INET as u16;
-        let addr = std::ptr::addr_of_mut!(ifreq.ifr_ifru.ifru_addr) as *mut libc::sockaddr_in;
+        let addr = unsafe { std::ptr::addr_of_mut!(ifreq.ifr_ifru.ifru_addr) as *mut libc::sockaddr_in };
         let addr_ptr = unsafe { &mut *addr };
         let sin_addr = &mut addr_ptr.sin_addr;
         let sin_addr_ptr = std::ptr::addr_of_mut!(*sin_addr);
