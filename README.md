@@ -1,10 +1,11 @@
-# 
+# TUN interface via ADALM Pluto
 
 Projet réseaux radio TPS IR RIO 2026 - Macéo TULOUP - Valentin FOULON
 
 ## Domaine d'application
 
 Ce code est fait pour tourner sur un système Linux (testé sur Archlinux AMD64, Ubuntu 25.10 AArch64).
+Il peut être adapté sur Mac, mais nécessite de comprendre la documentation sur utun.
 
 ## Prérequis
 
