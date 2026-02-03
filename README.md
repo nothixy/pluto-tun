@@ -4,7 +4,7 @@ Projet réseaux radio TPS IR RIO 2026 - Macéo TULOUP - Valentin FOULON
 
 ## Domaine d'application
 
-Ce code est fait pour tourner sur un système Linux (testé sur Archlinux AMD64, Ubuntu 25.10 AArch64) ou macOS (non testé).
+Ce code est fait pour tourner sur un système Linux (testé sur Archlinux AMD64, Ubuntu 25.10 AArch64).
 
 ## Prérequis
 
