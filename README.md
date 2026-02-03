@@ -19,7 +19,7 @@ cargo +nightly build
 
 ## Installation des dépendances / compilation
 
-L'installation des dépendances se fera automatiquement lors de la compilation.
+L'installation des dépendances rust se fera automatiquement lors de la compilation. Il faut cependant avoir installé la bibliothèque IIO avant.
 
 Pour compiler l'exécutable dans le fichier `./target/debug/PlutoTUN`,
 ```sh
