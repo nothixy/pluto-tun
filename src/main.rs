@@ -261,6 +261,9 @@ fn function_rx(tun_device: &tun::TunDevice, pluto: &std::sync::Arc<std::sync::Mu
                 if buffer.len() >= buffer_supposed_length as usize {
                     println!("GOT IT");
                     tun_device.write_to_tun(&buffer[..buffer_supposed_length as usize].to_vec());
+                    buffer = vec![];
+                    buffer_supposed_length = 0;
+                    previous_packet = -1;
                 }
 
             }
